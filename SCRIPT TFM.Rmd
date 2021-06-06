@@ -1,0 +1,1554 @@
+---
+title: "TFM"
+author: "Nadia Moltó"
+date: "8/2/2021"
+output:
+  html_document:
+    df_print: paged
+  word_document: default
+  pdf_document: 
+    latex_engine: lualatex
+---
+
+
+
+Inicialmente disponemos de varios ficheros:
+- Clinical data: Aqui aparecen los identificadores del paciente asi como sus datos clinicos (tipo de cancer, edad de deteccion,etc).
+-Mutations: Aqui se relaciona cada paciente con cada gen y se indica si tiene mutacion en cada uno de los genes (missense and nosense SNV). SNV es variacion en un unico nucleotido, missense es que se modifica un nucleotido de un codon que ahora codifica para otra proteina y nosense es que la modificacion de este codon produce un stop.
+-Tumormap relaciona los identificadores de los pacientes de los dos archivos anteriores.
+
+
+```{r}
+#Activacion de las librerias a emplear
+library(survival)
+library(rms)
+library(survplot)
+library(Hmisc)
+library(survminer)
+require(ggplot2)
+
+
+setwd("C:/Users/nadia/Desktop/TFM/DATOS") #Directorio donde estan los archivos de METABRIC
+
+dc <- read.table("clinical_data.txt", header=T, sep="\t", quote="") #Cargar datos clinicos
+
+#Exploracion de los datos:
+
+dim(dc)#Numero de pacientes(filas) y variables (columnas)
+head(dc) #Primeras filas
+names(dc) #Nombres de las variables
+summary(dc$Age.At.Diagnosis) #Estadisticas basicas
+
+
+dm <- read.csv2("mutations.csv", header=T) #Lectura datos de mutaciones
+
+#en este caso los datos viene transpuestos (individuos en columnas y genes en filas)
+#Hay que transponer la tabla con la funcion t()
+dm <- t(dm)
+#si hacemos 
+head(dm)[1:5, 1:5]
+#observamos que la operacion no se ha hecho bien ya que el nombre de los genes no aparece como nombres sino en la primera fila de la tabla, por lo tanto:
+
+colnames(dm) <- dm[1,] #Copiamos la primera fila como nombres de columnas
+dm <- dm[-1, ] #Eliminamos la primera fila ya que ya no la necesitamos
+dm <- as.data.frame(dm) #Convertimos la tabla a dataframe para operar mejor con ella
+dm$sample <- as.character(row.names(dm)) #Creamos una columna con los identificadores tumorales
+head(dm)[,1:10] # Muestra encabezado (primeras filas) para las primeras 10 columnas 
+head(dm)[,165:174] # Muestra encabezado para las ultimas 10 columnas (columna creada)
+ 
+
+#Podemos ver que en los datos clinicos los identificadores (de pacientes) son del tipo
+# MB-XXXX
+#Mientras que en los datos de mutaciones los identificadores (de tumores) son del tipo
+# MTS.TXXXX
+#Por tanto necesitamos la tabla TumorMap.txt para establecer la correspondencia
+tm <- read.table("tumorMap.txt", header=T, sep="\t") #Cargar tabla en variable
+ 
+#Vamos a cruzar esta tabla con los datos clinicos usando la funcion merge()
+#Es necesario especificar el nombre de la columna correspondiente de cada tabla con la cual queremos hacer la correspondencia (Metabric ID pero escrito de formas  diferentes en cada tabla)
+
+dc_new <- merge(dc, tm, by.x="METABRIC.ID", by.y = "metabricId")
+head (dc_new) #Para comprobar que la operacion se realizo correctamente
+
+#Ahora ya podemos cruzar las tablas con la informacion de mutaciones 
+#Sin embargo vemos que en la tabla dc_new los identificadores de tumores son de la forma
+#MTS.TXXXX
+#Mientras que en la tabla dm son de la forma MTS-TXXXX
+#Vamos a modificar los nombres de la tabla dc_new sustituyendo el "-" por "."  con la
+#funcion gsub
+dc_new$sample <- gsub("-", ".", dc_new$sample)
+
+
+
+data <- merge(dc_new, dm, by="sample") #Unir los datos en una misma tabla
+
+```
+
+
+
+```{r}
+#Exploracion de los datos:
+variables<- c("Numero de pacientes", "Edad media", "Desviacion estandar de la edad")
+pacientes<-ncol(data)
+edad.media<-mean(data$Age.At.Diagnosis)
+desviacion.edad<-sd(data$Age.At.Diagnosis)
+datos<-c(pacientes,edad.media,desviacion.edad)
+
+tabla<-data.frame(cbind(variables,datos))
+tabla
+```
+
+Ahora ya tenemos la tabla creada con los datos y vamos a empezar a explorarla y extraer datos. 
+Inicialmente, se van a aislar los genes que aparecen mutados en, al menos, el 10% de los pacientes
+
+PAM50:
+
+```{r}
+table(data$Pam50Subtype)
+```
+
+
+```{r}
+###LumA
+data_LumA <- subset(data, Pam50Subtype=="LumA") #Con esto estamos extrayendo para la clasificacion Pam50 los pacientes LumA
+data_LumA <- data_LumA[,-c(1:37)] #Eliminar variables clinicas y sumar solo genes, 37 porque son las columnas con datos clinicos
+suma_mutacionesLA <- apply(data_LumA,2,function(x){sum(!is.na(x))})/696 #Se eliminan los NA, se suman los datos y se normalizan los datos dividiendo por el numero de pacientes LumA
+```
+
+
+```{r}
+#LumB
+data_LumB <- subset(data, Pam50Subtype=="LumB") #Con esto estamos extrayendo para la clasificacion Pam50 los pacientes LumB
+data_LumB <- data_LumB[,-c(1:37)] 
+suma_mutacionesLB <- apply(data_LumB,2,function(x){sum(!is.na(x))})/474 
+```
+
+
+```{r}
+#Basal
+data_Basal <- subset(data, Pam50Subtype=="Basal")
+data_Basal <- data_Basal[,-c(1:37)] 
+suma_mutacionesB <- apply(data_Basal,2,function(x){sum(!is.na(x))})/308
+
+```
+
+
+```{r}
+#Normal
+data_Normal <- subset(data, Pam50Subtype=="Normal")
+data_Normal <- data_Normal[,-c(1:37)] 
+suma_mutacionesN <- apply(data_Normal,2,function(x){sum(!is.na(x))})/184
+```
+
+
+```{r}
+#Her2
+data_Her2 <- subset(data, Pam50Subtype=="Her2")
+data_Her2 <- data_Her2[,-c(1:37)] 
+suma_mutacionesH <- apply(data_Her2,2,function(x){sum(!is.na(x))})/236
+```
+
+Representamos los genes mutados de forma diferencial en el 10% de los individuos para esta clasificacion:
+```{r}
+par(mfrow=c(2,3))
+barplot((sort(suma_mutacionesLA[which(suma_mutacionesLA>0.1)])), las=2, col="turquoise", main = "Genes en LumA",ylim=0:1)
+barplot((sort(suma_mutacionesLB[which(suma_mutacionesLB>0.1)])), las=2, col = "powderblue", main = "Genes en LumB",ylim=0:1)
+barplot((sort(suma_mutacionesB[which(suma_mutacionesB>0.1)])), las=2, col = "turquoise2", main = "Genes en Basal",ylim=0:1)
+barplot((sort(suma_mutacionesN[which(suma_mutacionesN>0.1)])), las=2, col = "turquoise3", main = "Genes en Normal",ylim=0:1)
+barplot((sort(suma_mutacionesH[which(suma_mutacionesH>0.1)])), las=2, col = "turquoise4", main = "Genes en Her2",ylim=0:1)
+#Solo representamos aquellos genes que aparecen mutados en mas del 10% de los pacientes
+
+```
+
+Ahora miramos para otra clasificacion. Empezamos por la histologica:
+
+```{r}
+levels(data$Histological.Type) #Es necesario averiguar primero los niveles que hay en esta clasificacion
+
+
+```
+
+
+```{r}
+#Veamos cuantos pacientes tienen cada uno de los tipos
+table(data$Histological.Type)
+
+```
+
+Vamos a representar los genes mutados en el 10% de los pacientes que padecen cada subnivel de este cancer segun esta clasificacion:
+
+En el caso del tipo "BENIGN" solo tenemos 1 paciente que lo padece, entonces aqui lo unico que podria verse es aquellos genes mutados que presenta este paciente.
+
+```{r}
+#BEnign
+data_BENIGN <- subset(data, Histological.Type=="BENIGN")
+data_BENIGN <- data_BENIGN[,-c(1:37)]
+suma_mutacionesBENIGN <- apply(data_BENIGN,2,function(x){sum(!is.na(x))})
+
+```
+
+Ahora para el resto de subtipos de cancer dentro de esta clasificacion:
+```{r}
+data_DCIS <- subset(data, Histological.Type=="DCIS")
+data_DCIS <- data_DCIS[,-c(1:37)]
+suma_mutacionesDCIS <- apply(data_DCIS,2,function(x){sum(!is.na(x))})/2
+data_IDC <- subset(data, Histological.Type=="IDC")
+data_IDC <- data_IDC[,-c(1:37)]
+suma_mutacionesIDC <- apply(data_IDC,2,function(x){sum(!is.na(x))})/1503
+data_IDCMED <- subset(data, Histological.Type=="IDC-MED")
+data_IDCMED <- data_IDCMED[,-c(1:37)]
+suma_mutacionesIDCMED <- apply(data_IDCMED,2,function(x){sum(!is.na(x))})/31
+data_IDCMUC <- subset(data, Histological.Type=="IDC-MUC")
+data_IDCMUC <- data_IDCMUC[,-c(1:37)]
+suma_mutacionesIDCMUC <- apply(data_IDCMUC,2,function(x){sum(!is.na(x))})/42
+data_IDCTUB <- subset(data, Histological.Type=="IDC-TUB")
+data_IDCTUB <- data_IDCTUB[,-c(1:37)]
+suma_mutacionesIDCTUB <- apply(data_IDCTUB,2,function(x){sum(!is.na(x))})/67
+data_IDCILC <- subset(data, Histological.Type=="IDC+ILC")
+data_IDCILC <- data_IDCILC[,-c(1:37)]
+suma_mutacionesIDCILC <- apply(data_IDCILC,2,function(x){sum(!is.na(x))})/87
+data_ILC <- subset(data, Histological.Type=="ILC")
+data_ILC <- data_ILC[,-c(1:37)]
+suma_mutacionesILC <- apply(data_ILC,2,function(x){sum(!is.na(x))})/141
+data_IT <- subset(data, Histological.Type=="INVASIVE TUMOUR")
+data_IT <- data_IT[,-c(1:37)]
+suma_mutacionesIT <- apply(data_IT,2,function(x){sum(!is.na(x))})/9
+data_OI <- subset(data, Histological.Type=="OTHER INVASIVE")
+data_OI <- data_OI[,-c(1:37)]
+suma_mutacionesOI <- apply(data_OI,2,function(x){sum(!is.na(x))})/19
+```
+
+
+No hay ningun paciente con cancer filoides que presente alguna mutacion, por lo que no se representa este subtipo.
+
+```{r}
+#Representamos:
+par(mfrow=c(2,3))
+barplot((sort(suma_mutacionesBENIGN[which(suma_mutacionesBENIGN>0.1)])), las=2, col="sandybrown", main="Genes en BENIGN") #Aqui hay que tener en cuenta que solo hay un paciente con este tipo de tumor
+barplot((sort(suma_mutacionesDCIS[which(suma_mutacionesDCIS>0.1)])), las=2, col="salmon4", main = "Genes en DCIS", ylim= 0:1)
+barplot((sort(suma_mutacionesIDC[which(suma_mutacionesIDC>0.1)])), las=2, col="salmon", main = "Genes en IDC", ylim= 0:1)
+barplot((sort(suma_mutacionesIDCMED[which(suma_mutacionesIDCMED>0.1)])), las=2, col="salmon1", main = "Genes en IDC-MED", ylim= 0:1)
+barplot((sort(suma_mutacionesIDCMUC[which(suma_mutacionesIDCMUC>0.1)])), las=2, col="salmon2", main = "Genes en IDC-MUC", ylim= 0:1)
+barplot((sort(suma_mutacionesIDCTUB[which(suma_mutacionesIDCTUB>0.1)])), las=2, col="salmon3", main = "Genes en IDC-TUB", ylim= 0:1)
+```
+
+```{r}
+par(mfrow=c(2,3))
+barplot((sort(suma_mutacionesIDCILC[which(suma_mutacionesIDCILC>0.1)])), las=2, col="rosybrown", main = "Genes en IDC+ILC", ylim= 0:1)
+barplot((sort(suma_mutacionesILC[which(suma_mutacionesILC>0.1)])), las=2, col="rosybrown1", main = "Genes en ILC", ylim= 0:1)
+barplot((sort(suma_mutacionesIT[which(suma_mutacionesIT>0.1)])), las=2, col="rosybrown2", main = "Genes en INVASIVE TUMOUR", ylim= 0:1)
+barplot((sort(suma_mutacionesOI[which(suma_mutacionesOI>0.1)])), las=2, col="rosybrown3", main = "Genes en Other Invasive", ylim= 0:1)
+
+```
+
+Claudin Subtype
+
+```{r}
+table(data$ClaudinSubtype) #Variables
+```
+
+```{r}
+#LumA
+data_LumAc <- subset(data, ClaudinSubtype=="LumA")
+data_LumAc <- data_LumAc[,-c(1:37)]
+suma_mutacionesLAc <- apply(data_LumAc,2,function(x){sum(!is.na(x))})/679 
+#LumB
+data_LumBc <- subset(data, ClaudinSubtype=="LumB")
+data_LumBc <- data_LumBc[,-c(1:37)]
+suma_mutacionesLBc <- apply(data_LumBc,2,function(x){sum(!is.na(x))})/461
+#Basal
+data_Basalc <- subset(data, ClaudinSubtype=="Basal")
+data_Basalc <- data_Basalc[,-c(1:37)]
+suma_mutacionesBc <- apply(data_Basalc,2,function(x){sum(!is.na(x))})/199
+#Claudin low
+data_clau <- subset(data, ClaudinSubtype=="claudin-low")
+data_clau <- data_clau[,-c(1:37)]
+suma_mutacionesclau <- apply(data_clau,2,function(x){sum(!is.na(x))})/199
+#Her2
+data_Her2c <- subset(data, ClaudinSubtype=="Her2")
+data_Her2c <- data_Her2c[,-c(1:37)]
+suma_mutacionesHer2c <- apply(data_Her2c,2,function(x){sum(!is.na(x))})/220
+#Normal
+data_Normalc<- subset(data, ClaudinSubtype=="Normal")
+data_Normalc <- data_Normalc[,-c(1:37)]
+suma_mutacionesNormalc <- apply(data_Normalc,2,function(x){sum(!is.na(x))})/140
+
+#Representamos
+par(mfrow=c(2,3))
+barplot((sort(suma_mutacionesLAc[which(suma_mutacionesLAc>0.1)])), las=2,col="seagreen", main = "Genes en LumA", ylim= 0:1)
+barplot((sort(suma_mutacionesLBc[which(suma_mutacionesLBc>0.1)])), las=2, col="seagreen1", main = "Genes en LumB", ylim= 0:1)
+barplot((sort(suma_mutacionesBc[which(suma_mutacionesBc>0.1)])), las=2, col="seagreen2", main = "Genes en Basal", ylim= 0:1)
+barplot((sort(suma_mutacionesclau[which(suma_mutacionesclau>0.1)])), las=2, col="seagreen3", main = "Genes Claudin-low", ylim= 0:1)
+barplot((sort(suma_mutacionesHer2c[which(suma_mutacionesHer2c>0.1)])), las=2, col="seagreen4", main = "Genes en Her2", ylim= 0:1)
+barplot((sort(suma_mutacionesNormalc[which(suma_mutacionesNormalc>0.1)])), las=2, col="springgreen4", main = "Genes en Normal", ylim= 0:1)
+```
+
+ER, PR, HER2
+```{r}
+table(data$ER.Expr)
+table(data$PR.Expr)
+table(data$Her2.Expr)
+```
+
+```{r}
+#ER
+data_ERp <- subset(data, ER.Expr=="+")
+data_ERp <- data_ERp[,-c(1:37)]
+suma_mutacionesERp <- apply(data_ERp,2,function(x){sum(!is.na(x))})/1459
+data_ERn <- subset(data, ER.Expr=="-")
+data_ERn <- data_ERn[,-c(1:37)]
+suma_mutacionesERn <- apply(data_ERn,2,function(x){sum(!is.na(x))})/445
+#HER2
+data_HER2p <- subset(data, Her2.Expr=="+")
+data_HER2p <- data_HER2p[,-c(1:37)]
+suma_mutacionesHER2p <- apply(data_HER2p,2,function(x){sum(!is.na(x))})/236
+data_HER2n <- subset(data, Her2.Expr=="-")
+data_HER2n <- data_HER2n[,-c(1:37)]
+suma_mutacionesHER2n<- apply(data_HER2n,2,function(x){sum(!is.na(x))})/1668
+#PR
+data_PRp <- subset(data, PR.Expr=="+")
+data_PRp <- data_PRp[,-c(1:37)]
+suma_mutacionesPRp <- apply(data_PRp,2,function(x){sum(!is.na(x))})/1009
+data_PRn <- subset(data, PR.Expr=="-")
+data_PRn <- data_PRn[,-c(1:37)]
+suma_mutacionesPRn <- apply(data_PRn,2,function(x){sum(!is.na(x))})/895
+
+par(mfrow=c(2,3))
+barplot((sort(suma_mutacionesERp[which(suma_mutacionesERp>0.1)])), las=2,col="lightgoldenrod2", main = "Genes ER +",ylim= 0:1)
+barplot((sort(suma_mutacionesHER2p[which(suma_mutacionesHER2p>0.1)])), las=2, col="violetred1", main = "Genes en Her2+",ylim= 0:1)
+barplot((sort(suma_mutacionesPRp[which(suma_mutacionesPRp>0.1)])), las=2, col="pink1", main = "Genes en PR+", ylim= 0:1)
+barplot((sort(suma_mutacionesERn[which(suma_mutacionesERn>0.1)])), las=2, col="lightgoldenrod3", main = "Genes en ER-", ylim= 0:1)
+barplot((sort(suma_mutacionesHER2n[which(suma_mutacionesHER2n>0.1)])), las=2, col="violetred2", main = "Genes en Her2-", ylim= 0:1)
+barplot((sort(suma_mutacionesPRn[which(suma_mutacionesPRn>0.1)])), las=2, col="pink2", main = "Genes en PR-", ylim= 0:1)
+```
+
+
+Hasta ahora hemos representado los genes mutados en el 10% de los pacientes analizados del METABRIC en cada uno de los grupos analizados. 
+El siguiente paso: ver si los genes que aparecen mutados realmente influyen en el establecimiento de los subgrupos para cada clasificacion. Por ello, vamos a coger para cada clasificacion un determinado numero de genes y vamos a valorar si tienen diferencias significativas entre subgrupos.
+Cogeremos aquellos genes que aparezcan mayormente mutados segun las representaciones. 
+Para valorar el numero de genes a coger, se realiza una media y mediana del numero de genes que aparecen mutados para cada clasificacion.
+
+```{r}
+#PAM50
+n.LA<-nrow(data.frame(sort(suma_mutacionesLA[which(suma_mutacionesLA>0.1)])))-1 #Convertimos a dataframe, contamos los genes y estamos 1 porque aparece Status que no es un gen
+#Ahora lo mismo para el resto de subtipos
+n.LB<-nrow(data.frame(sort(suma_mutacionesLA[which(suma_mutacionesLA>0.1)])))-1
+n.N<-nrow(data.frame(sort(suma_mutacionesN[which(suma_mutacionesN>0.1)])))-1
+n.B<-nrow(data.frame(sort(suma_mutacionesB[which(suma_mutacionesB>0.1)])))-1
+n.Her2<-nrow(data.frame(sort(suma_mutacionesH[which(suma_mutacionesH>0.1)])))-1
+data1<-c(n.LA,n.LB,n.N,n.B,n.Her2)
+
+median(data1)
+mean(data1) #Hay una media de 7.4 genes y una mediana de 8 genes para esta clasificacion
+
+
+```
+```{r}
+#Histologica
+n.Benign<-nrow(data.frame(sort(suma_mutacionesBENIGN[which(suma_mutacionesBENIGN>0.1)])))-1
+n.DCIS<-nrow(data.frame(sort(suma_mutacionesDCIS[which(suma_mutacionesDCIS>0.1)])))-1
+n.IDC<-nrow(data.frame(sort(suma_mutacionesIDC[which(suma_mutacionesIDC>0.1)])))-1
+n.IDCMED<-nrow(data.frame(sort(suma_mutacionesIDCMED[which(suma_mutacionesIDCMED>0.1)])))-1
+n.IDCMUC<-nrow(data.frame(sort(suma_mutacionesIDCMUC[which(suma_mutacionesIDCMUC>0.1)])))-1
+n.IDCTUB<-nrow(data.frame(sort(suma_mutacionesIDCTUB[which(suma_mutacionesIDCTUB>0.1)])))-1
+n.IDCILC<-nrow(data.frame(sort(suma_mutacionesIDCILC[which(suma_mutacionesIDCILC>0.1)])))-1
+n.ILC<-nrow(data.frame(sort(suma_mutacionesILC[which(suma_mutacionesILC>0.1)])))-1
+n.IT<-nrow(data.frame(sort(suma_mutacionesIT[which(suma_mutacionesIT>0.1)])))-1
+n.OI<-nrow(data.frame(sort(suma_mutacionesOI[which(suma_mutacionesOI>0.1)])))-1
+
+data2<-c(n.DCIS,n.Benign,n.IDC,n.IDCMED,n.IDCMUC,n.IDCILC,n.ILC,n.OI,n.IT)
+median(data2)
+mean(data2)
+
+#Da una mediana de 7 y una media de 9.6
+```
+
+
+
+```{r}
+n.ERp<-nrow(data.frame(sort(suma_mutacionesERp[which(suma_mutacionesERp>0.1)])))-1
+n.ERn<-nrow(data.frame(sort(suma_mutacionesERp[which(suma_mutacionesERn>0.1)])))-1
+n.PRp<-nrow(data.frame(sort(suma_mutacionesPRp[which(suma_mutacionesPRp>0.1)])))-1
+n.PRn<-nrow(data.frame(sort(suma_mutacionesERp[which(suma_mutacionesPRn>0.1)])))-1
+n.H2p<-nrow(data.frame(sort(suma_mutacionesHER2p[which(suma_mutacionesHER2p>0.1)])))-1
+n.H2n<-nrow(data.frame(sort(suma_mutacionesHER2n[which(suma_mutacionesHER2n>0.1)])))-1
+
+data3<-c(n.ERp,n.ERn)
+data4<-c(n.PRp,n.PRn)
+data5<-c(n.H2p,n.H2n)
+
+median(data3)
+mean(data3)
+median(data4)
+mean(data4)
+median(data5)
+mean(data5)
+
+#Daria una mediana de 8.5 y una media de 8.5 para ER
+#Una media y mediana de 7 para PR
+#Y una media y mediana de 7 para HER2
+```
+
+Se ha decidido escoger un total de 7 genes por clasificacion ya que debido a que las medias y medianas se aproximan a esta cifra en todas las clasificaciones y se considera una cifra suficiente para valorar el efecto de los genes sobre cada clasificacion.
+
+Asi pues, se procede a seguir con el siguiente paso, en el cual se va a testar estadisticamente si para una misma clasificacion (p.ej PAM50),en cada uno de los subgrupos existen diferencias en cuanto a que un gen este mutado en un subgrupo y en otro. Se empleara un test Chi2.
+
+PAM50
+
+```{r}
+
+#Los genes que destacan en los graficos de barras por presentarse mutados en el 10% de los pacientes dentro de la clasificacion PAM50 son: TP53, PIK3CA, CDH1, GATA3, MUC16, AHNAK2, SYNE1
+table(data$Pam50Subtype)
+
+####LumA
+P50LA<-apply(data_LumA,2,function(x){sum(!is.na(x))}) #extraemos datos para LumA
+GATA3.LAm<-as.numeric(P50LA["GATA3"])
+AHNAK2.LAm<-as.numeric(P50LA["AHNAK2"])
+MUC16.LAm<-as.numeric(P50LA["MUC16"])
+PIK3CA.LAm<-as.numeric(P50LA["PIK3CA"])
+TP53.LAm<-as.numeric(P50LA["TP53"])
+SYNE1.LAm<-as.numeric(P50LA["SYNE1"])
+CDH1.LAm<-as.numeric(P50LA["CDH1"])
+v1<-c(TP53.LAm,PIK3CA.LAm,GATA3.LAm,SYNE1.LAm,MUC16.LAm,AHNAK2.LAm,CDH1.LAm)
+
+####LumB
+P50LB<-apply(data_LumB,2,function(x){sum(!is.na(x))}) #extraemos datos para LumB
+TP53.LBm<-as.numeric(P50LB["TP53"])
+PIK3CA.LBm<-as.numeric(P50LB["PIK3CA"])
+SYNE1.LBm<-as.numeric(P50LB["SYNE1"])
+GATA3.LBm<-as.numeric(P50LB["GATA3"])
+MUC16.LBm<-as.numeric(P50LB["MUC16"])
+AHNAK2.LBm<-as.numeric(P50LB["AHNAK2"])
+CDH1.LBm<-as.numeric(P50LB["CDH1"])
+v2<-c(TP53.LBm,PIK3CA.LBm,SYNE1.LBm,GATA3.LBm,MUC16.LBm,AHNAK2.LBm,CDH1.LBm)
+
+####Normal
+P50N<-apply(data_Normal,2,function(x){sum(!is.na(x))})
+TP53.Nm<-as.numeric(P50N["TP53"])
+PIK3CA.Nm<-as.numeric(P50N["PIK3CA"])
+SYNE1.Nm<-as.numeric(P50N["SYNE1"])
+GATA3.Nm<-as.numeric(P50N["GATA3"])
+MUC16.Nm<-as.numeric(P50N["MUC16"])
+AHNAK2.Nm<-as.numeric(P50N["AHNAK2"])
+CDH1.Nm<-as.numeric(P50N["CDH1"])
+v3<-c(TP53.Nm,PIK3CA.Nm,SYNE1.Nm,GATA3.Nm,MUC16.Nm,AHNAK2.Nm,CDH1.Nm)
+
+####Basal
+P50B<-apply(data_Basal,2,function(x){sum(!is.na(x))})
+TP53.Bm<-as.numeric(P50B["TP53"])
+PIK3CA.Bm<-as.numeric(P50B["PIK3CA"])
+SYNE1.Bm<-as.numeric(P50B["SYNE1"])
+GATA3.Bm<-as.numeric(P50B["GATA3"])
+MUC16.Bm<-as.numeric(P50B["MUC16"])
+AHNAK2.Bm<-as.numeric(P50B["AHNAK2"])
+CDH1.Bm<-as.numeric(P50LA["CDH1"])
+v4<-c(TP53.Bm,PIK3CA.Bm,SYNE1.Bm,GATA3.Bm,MUC16.Bm,AHNAK2.Bm,CDH1.Bm)
+
+####Her2
+P50H2<-apply(data_Her2,2,function(x){sum(!is.na(x))})
+TP53.H2m<-as.numeric(P50H2["TP53"])
+PIK3CA.H2m<-as.numeric(P50H2["PIK3CA"])
+SYNE1.H2m<-as.numeric(P50H2["SYNE1"])
+GATA3.H2m<-as.numeric(P50H2["GATA3"])
+MUC16.H2m<-as.numeric(P50H2["MUC16"])
+AHNAK2.H2m<-as.numeric(P50H2["AHNAK2"])
+CDH1.H2m<-as.numeric(P50LA["CDH1"])
+v5<-c(TP53.H2m,PIK3CA.H2m,SYNE1.H2m,GATA3.H2m,MUC16.H2m,AHNAK2.H2m,CDH1.H2m)
+
+
+matrix1<-matrix(ncol=7,nrow=5)
+matrix1<-rbind(v1,v2,v3,v4,v5)
+colnames(matrix1)<-c("TP53","PIK3CA","SYNE1","GATA3","MUC16","AHNAK2","CDH1")
+rownames(matrix1)<-c("LumA","LumB","Basal","Normal","Her2")
+matrix1[is.na(matrix1)] <- 0
+
+chisq.test(matrix1) #Test
+
+```
+
+
+
+CLASIFICACION HISTOLOGICA:
+
+```{r}
+table(data$Histological.Type) #Subtipos
+```
+
+```{r}
+#Se eligen los genes: TP53,PIK3CA,MUC16,GATA3,AHNAK2,KMT2C, AHNAK
+####BENIGN
+HISTB<-apply(data_BENIGN,2,function(x){sum(!is.na(x))})
+TP53.Bm<-as.numeric(HISTB["TP53"])
+PIK3CA.Bm<-as.numeric(HISTB["PIK3CA"])
+MUC16.Bm<-as.numeric(HISTB["MUC16"])
+GATA3.Bm<-as.numeric(HISTB["GATA3"])
+AHNAK2.Bm<-as.numeric(HISTB["AHNAK2"])
+KMT2C.Bm<-as.numeric(HISTB["KMT2C"])
+AHNAK.Bm<-as.numeric(HISTB["AHNAK"])
+v1.2<-c(TP53.Bm,PIK3CA.Bm,MUC16.Bm,GATA3.Bm,KMT2C.Bm,AHNAK2.Bm,AHNAK.Bm)
+
+####DCIS
+HISTDCIS<-apply(data_DCIS,2,function(x){sum(!is.na(x))})
+TP53.DCISm<-as.numeric(HISTDCIS["TP53"])
+PIK3CA.DCISm<-as.numeric(HISTDCIS["PIK3CA"])
+MUC16.DCISm<-as.numeric(HISTDCIS["MUC16"])
+GATA3.DCISm<-as.numeric(HISTDCIS["GATA3"])
+AHNAK2.DCISm<-as.numeric(HISTDCIS["AHNAK2"])
+KMT2C.DCISm<-as.numeric(HISTDCIS["KMT2C"])
+AHNAK.DCISm<-as.numeric(HISTDCIS["AHNAK"])
+v2.2<-c(TP53.DCISm,PIK3CA.DCISm,MUC16.DCISm,GATA3.DCISm,KMT2C.DCISm,AHNAK2.DCISm,AHNAK.DCISm)
+
+####IDC
+HISTIDC<-apply(data_IDC,2,function(x){sum(!is.na(x))})
+TP53.IDCm<-as.numeric(HISTIDC["TP53"])
+PIK3CA.IDCm<-as.numeric(HISTIDC["PIK3CA"])
+MUC16.IDCm<-as.numeric(HISTIDC["MUC16"])
+GATA3.IDCm<-as.numeric(HISTIDC["GATA3"])
+AHNAK2.IDCm<-as.numeric(HISTIDC["AHNAK2"])
+KMT2C.IDCm<-as.numeric(HISTIDC["KMT2C"])
+AHNAK.IDCm<-as.numeric(HISTIDC["AHNAK"])
+v3.2<-c(TP53.IDCm,PIK3CA.IDCm,MUC16.IDCm,GATA3.IDCm,KMT2C.IDCm,AHNAK2.IDCm,AHNAK.IDCm)
+
+####IDCMED
+HISTIDCMED<-apply(data_IDCMED,2,function(x){sum(!is.na(x))})
+TP53.IDCMEDm<-as.numeric(HISTIDCMED["TP53"])
+PIK3CA.IDCMEDm<-as.numeric(HISTIDCMED["PIK3CA"])
+MUC16.IDCMEDm<-as.numeric(HISTIDCMED["MUC16"])
+GATA3.IDCMEDm<-as.numeric(HISTIDCMED["GATA3"])
+AHNAK2.IDCMEDm<-as.numeric(HISTIDCMED["AHNAK2"])
+KMT2C.IDCMEDm<-as.numeric(HISTIDCMED["KMT2C"])
+AHNAK.IDCMEDm<-as.numeric(HISTIDCMED["AHNAK"])
+v4.2<-c(TP53.IDCMEDm,PIK3CA.IDCMEDm,MUC16.IDCMEDm,GATA3.IDCMEDm,KMT2C.IDCMEDm,AHNAK2.IDCMEDm,AHNAK.IDCMEDm)
+
+####IDCMUC
+HISTIDCMUC<-apply(data_IDCMUC,2,function(x){sum(!is.na(x))})
+TP53.IDCMUCm<-as.numeric(HISTIDCMUC["TP53"])
+PIK3CA.IDCMUCm<-as.numeric(HISTIDCMUC["PIK3CA"])
+MUC16.IDCMUCm<-as.numeric(HISTIDCMUC["MUC16"])
+GATA3.IDCMUCm<-as.numeric(HISTIDCMUC["GATA3"])
+AHNAK2.IDCMUCm<-as.numeric(HISTIDCMUC["AHNAK2"])
+KMT2C.IDCMUCm<-as.numeric(HISTIDCMUC["KMT2C"])
+AHNAK.IDCMUCm<-as.numeric(HISTIDCMUC["AHNAK"])
+v5.2<-c(TP53.IDCMUCm,PIK3CA.IDCMUCm,MUC16.IDCMUCm,GATA3.IDCMUCm,KMT2C.IDCMUCm,AHNAK2.IDCMUCm,AHNAK.IDCMUCm)
+
+####IDCTUB
+HISTIDCTUB<-apply(data_IDCTUB,2,function(x){sum(!is.na(x))})
+TP53.IDCTUBm<-as.numeric(HISTIDCTUB["TP53"])
+PIK3CA.IDCTUBm<-as.numeric(HISTIDCTUB["PIK3CA"])
+MUC16.IDCTUBm<-as.numeric(HISTIDCTUB["MUC16"])
+GATA3.IDCTUBm<-as.numeric(HISTIDCTUB["GATA3"])
+AHNAK2.IDCTUBm<-as.numeric(HISTIDCTUB["AHNAK2"])
+KMT2C.IDCTUBm<-as.numeric(HISTIDCTUB["KMT2C"])
+AHNAK.IDCTUBm<-as.numeric(HISTIDCTUB["AHNAK"])
+v6.2<-c(TP53.IDCTUBm,PIK3CA.IDCTUBm,MUC16.IDCTUBm,GATA3.IDCTUBm,KMT2C.IDCTUBm,AHNAK2.IDCTUBm,AHNAK.IDCTUBm)
+
+
+####IDC+ILC
+HISTIDCILC<-apply(data_IDCILC,2,function(x){sum(!is.na(x))})
+TP53.IDCILCm<-as.numeric(HISTIDCILC["TP53"])
+PIK3CA.IDCILCm<-as.numeric(HISTIDCILC["PIK3CA"])
+MUC16.IDCILCm<-as.numeric(HISTIDCILC["MUC16"])
+GATA3.IDCILCm<-as.numeric(HISTIDCILC["GATA3"])
+AHNAK2.IDCILCm<-as.numeric(HISTIDCILC["AHNAK2"])
+KMT2C.IDCILCm<-as.numeric(HISTIDCILC["KMT2C"])
+AHNAK.IDCILCm<-as.numeric(HISTIDCILC["AHNAK"])
+v7.2<-c(TP53.IDCILCm,PIK3CA.IDCILCm,MUC16.IDCILCm,GATA3.IDCILCm,KMT2C.IDCILCm,AHNAK2.IDCILCm,AHNAK.IDCILCm)
+
+####ILC
+HISTILC<-apply(data_ILC,2,function(x){sum(!is.na(x))})
+TP53.ILCm<-as.numeric(HISTILC["TP53"])
+PIK3CA.ILCm<-as.numeric(HISTILC["PIK3CA"])
+MUC16.ILCm<-as.numeric(HISTILC["MUC16"])
+GATA3.ILCm<-as.numeric(HISTILC["GATA3"])
+AHNAK2.ILCm<-as.numeric(HISTILC["AHNAK2"])
+KMT2C.ILCm<-as.numeric(HISTILC["KMT2C"])
+AHNAK.ILCm<-as.numeric(HISTILC["AHNAK"])
+v8.2<-c(TP53.ILCm,PIK3CA.ILCm,MUC16.ILCm,GATA3.ILCm,KMT2C.ILCm,AHNAK2.ILCm,AHNAK.ILCm)
+
+
+####INVASIVE
+
+HISTIT<-apply(data_IT,2,function(x){sum(!is.na(x))})
+TP53.ITm<-as.numeric(HISTIT["TP53"])
+PIK3CA.ITm<-as.numeric(HISTIT["PIK3CA"])
+MUC16.ITm<-as.numeric(HISTIT["MUC16"])
+GATA3.ITm<-as.numeric(HISTIT["GATA3"])
+AHNAK2.ITm<-as.numeric(HISTIT["AHNAK2"])
+KMT2C.ITm<-as.numeric(HISTIT["KMT2C"])
+AHNAK.ITm<-as.numeric(HISTIT["AHNAK"])
+v9.2<-c(TP53.ITm,PIK3CA.ITm,MUC16.ITm,GATA3.ITm,KMT2C.ITm,AHNAK2.ITm,AHNAK.ITm)
+
+####OTHER
+HISTOI<-apply(data_OI,2,function(x){sum(!is.na(x))})
+TP53.OIm<-as.numeric(HISTOI["TP53"])
+PIK3CA.OIm<-as.numeric(HISTOI["PIK3CA"])
+MUC16.OIm<-as.numeric(HISTOI["MUC16"])
+GATA3.OIm<-as.numeric(HISTOI["GATA3"])
+AHNAK2.OIm<-as.numeric(HISTOI["AHNAK2"])
+KMT2C.OIm<-as.numeric(HISTOI["KMT2C"])
+AHNAK.OIm<-as.numeric(HISTOI["AHNAK"])
+v10.2<-c(TP53.OIm,PIK3CA.OIm,MUC16.OIm,GATA3.OIm,KMT2C.OIm,AHNAK2.OIm,AHNAK.OIm)
+
+#Test Chi2 para clasificacion Histologica:
+
+matrix2<-matrix(ncol=7,nrow=10)
+matrix2<-rbind(v1.2,v2.2,v3.2,v4.2,v5.2,v6.2,v7.2,v8.2,v9.2,v10.2)
+colnames(matrix2)<-c("TP53","PIK3CA","MUC16","GATA3","KMT2C","AHNAK2","AHNAK")
+rownames(matrix2)<-c("BENIGN","DCIS","IDC","IDC-MED","IDC-MUC","IDC-TUB","IDC+ILC","ILC","IT","OI")
+matrix2[is.na(matrix2)] <- 0
+
+chisq.test(matrix2)
+```
+
+Nuevamente, el resultado sale significativo.
+
+CLAUDIN SUBTYPE:
+
+```{r}
+table(data$ClaudinSubtype) #Subtipos
+```
+
+```{r}
+#Los genes a estudiar son: PIK3CA, AHNAK2, SYNE1, TP53, MUC16, GATA3, DNAH11
+
+
+####BASAL
+CLAUB<-apply(data_Basalc,2,function(x){sum(!is.na(x))})
+SYNE1.Bcm<-as.numeric(CLAUB["SYNE1"])
+PIK3CA.Bcm<-as.numeric(CLAUB["PIK3CA"])
+MUC16.Bcm<-as.numeric(CLAUB["MUC16"])
+GATA3.Bcm<-as.numeric(CLAUB["GATA3"])
+AHNAK2.Bcm<-as.numeric(CLAUB["AHNAK2"])
+TP53.Bcm<-as.numeric(CLAUB["TP53"])
+DNAH11.Bcm<-as.numeric(CLAUB["DNAH11"])
+v1.3<-c(SYNE1.Bcm,PIK3CA.Bcm,MUC16.Bcm,GATA3.Bcm,TP53.Bcm,AHNAK2.Bcm,DNAH11.Bcm)
+
+
+####CLAUDIN LOW
+CLAUCL<-apply(data_clau,2,function(x){sum(!is.na(x))})
+SYNE1.clm<-as.numeric(CLAUCL["SYNE1"])
+PIK3CA.clm<-as.numeric(CLAUCL["PIK3CA"])
+MUC16.clm<-as.numeric(CLAUCL["MUC16"])
+GATA3.clm<-as.numeric(CLAUCL["GATA3"])
+AHNAK2.clm<-as.numeric(CLAUCL["AHNAK2"])
+TP53.clm<-as.numeric(CLAUCL["TP53"])
+DNAH11.clm<-as.numeric(CLAUCL["DNAH11"])
+v2.3<-c(SYNE1.clm,PIK3CA.clm,MUC16.clm,GATA3.clm,TP53.clm,AHNAK2.clm,DNAH11.clm)
+
+
+####HER2
+CLAUHER2<-apply(data_Her2c,2,function(x){sum(!is.na(x))})
+SYNE1.hercm<-as.numeric(CLAUHER2["SYNE1"])
+PIK3CA.hercm<-as.numeric(CLAUHER2["PIK3CA"])
+MUC16.hercm<-as.numeric(CLAUHER2["MUC16"])
+GATA3.hercm<-as.numeric(CLAUHER2["GATA3"])
+AHNAK2.hercm<-as.numeric(CLAUHER2["AHNAK2"])
+TP53.hercm<-as.numeric(CLAUCL["TP53"])
+DNAH11.hercm<-as.numeric(CLAUCL["DNAH11"])
+v3.3<-c(SYNE1.hercm,PIK3CA.hercm,MUC16.hercm,GATA3.hercm,TP53.hercm,AHNAK2.hercm,DNAH11.hercm)
+
+
+####LUM-A
+CLAULUMA<-apply(data_LumAc,2,function(x){sum(!is.na(x))})
+SYNE1.clam<-as.numeric(CLAULUMA["SYNE1"])
+PIK3CA.clam<-as.numeric(CLAULUMA["PIK3CA"])
+MUC16.clam<-as.numeric(CLAULUMA["MUC16"])
+GATA3.clam<-as.numeric(CLAULUMA["GATA3"])
+AHNAK2.clam<-as.numeric(CLAULUMA["AHNAK2"])
+TP53.clam<-as.numeric(CLAULUMA["TP53"])
+DNAH11.clam<-as.numeric(CLAULUMA["DNAH11"])
+v4.3<-c(SYNE1.clam,PIK3CA.clam,MUC16.clam,GATA3.clam,TP53.clam,AHNAK2.clam,DNAH11.clam)
+
+
+####LUM-B
+CLAULUMB<-apply(data_LumBc,2,function(x){sum(!is.na(x))})
+SYNE1.clbm<-as.numeric(CLAULUMB["SYNE1"])
+PIK3CA.clbm<-as.numeric(CLAULUMB["PIK3CA"])
+MUC16.clbm<-as.numeric(CLAULUMB["MUC16"])
+GATA3.clbm<-as.numeric(CLAULUMB["GATA3"])
+AHNAK2.clbm<-as.numeric(CLAULUMB["AHNAK2"])
+TP53.clbm<-as.numeric(CLAULUMB["TP53"])
+DNAH11.clbm<-as.numeric(CLAULUMB["DNAH11"])
+v5.3<-c(SYNE1.clbm,PIK3CA.clbm,MUC16.clbm,GATA3.clbm,TP53.clbm,AHNAK2.clbm,DNAH11.clbm)
+
+
+####NORMAL
+CLAUN<-apply(data_Normalc,2,function(x){sum(!is.na(x))})
+SYNE1.clnm<-as.numeric(CLAUN["SYNE1"])
+PIK3CA.clnm<-as.numeric(CLAUN["PIK3CA"])
+MUC16.clnm<-as.numeric(CLAUN["MUC16"])
+GATA3.clnm<-as.numeric(CLAUN["GATA3"])
+AHNAK2.clnm<-as.numeric(CLAUN["AHNAK2"])
+TP53.clnm<-as.numeric(CLAUN["TP53"])
+DNAH11.clnm<-as.numeric(CLAUN["DNAH11"])
+v6.3<-c(SYNE1.clnm,PIK3CA.clnm,MUC16.clnm,GATA3.clnm,TP53.clnm,AHNAK2.clnm,DNAH11.clnm)
+
+matrix3<-matrix(ncol=7,nrow=6)
+matrix3<-rbind(v1.3,v2.3,v3.3,v4.3,v5.3,v6.3)
+colnames(matrix3)<-c("SYNE1","PIK3CA","MUC16","GATA3","TP53","AHNAK2","DNAH11")
+rownames(matrix3)<-c("BASAL","CLAUDIN-LOW","HER2","LUMA","LUMB","NORMAL")
+matrix3[is.na(matrix3)] <- 0
+
+chisq.test(matrix3)
+
+```
+
+
+HER2 / PR /ER
+
+```{r}
+
+###HER2+
+HER2p<-apply(data_HER2p,2,function(x){sum(!is.na(x))})
+TP53.her2p<-as.numeric(HER2p["TP53"])
+PIK3CA.her2p<-as.numeric(HER2p["PIK3CA"])
+MUC16.her2p<-as.numeric(HER2p["MUC16"])
+GATA3.her2p<-as.numeric(HER2p["GATA3"])
+AHNAK2.her2p<-as.numeric(HER2p["AHNAK2"])
+SYNE1.her2p<-as.numeric(HER2p["SYNE1"])
+KMT2c.her2p<-as.numeric(HER2p["KMT2C"])
+v7.1<-c(TP53.her2p,PIK3CA.her2p,MUC16.her2p,GATA3.her2p,AHNAK2.her2p,SYNE1.her2p,KMT2c.her2p)
+###HER2-
+HER2n<-apply(data_HER2n,2,function(x){sum(!is.na(x))})
+TP53.her2n<-as.numeric(HER2n["TP53"])
+PIK3CA.her2n<-as.numeric(HER2n["PIK3CA"])
+MUC16.her2n<-as.numeric(HER2n["MUC16"])
+GATA3.her2n<-as.numeric(HER2n["GATA3"])
+AHNAK2.her2n<-as.numeric(HER2n["AHNAK2"])
+SYNE1.her2n<-as.numeric(HER2n["SYNE1"])
+KMT2c.her2n<-as.numeric(HER2n["KMT2C"])
+v7.2<-c(TP53.her2n,PIK3CA.her2n,MUC16.her2n,GATA3.her2n,AHNAK2.her2n,SYNE1.her2n,KMT2c.her2n)
+###ER+
+ERp<-apply(data_ERp,2,function(x){sum(!is.na(x))})
+TP53.erp<-as.numeric(ERp["TP53"])
+PIK3CA.erp<-as.numeric(ERp["PIK3CA"])
+MUC16.erp<-as.numeric(ERp["MUC16"])
+GATA3.erp<-as.numeric(ERp["GATA3"])
+AHNAK2.erp<-as.numeric(ERp["AHNAK2"])
+SYNE1.erp<-as.numeric(ERp["SYNE1"])
+KMT2C.erp<-as.numeric(ERp["KMT2c"])
+v7.3<-c(TP53.erp,PIK3CA.erp,MUC16.erp,GATA3.erp,AHNAK2.erp,SYNE1.erp,KMT2C.erp)
+###ER-
+ERn<-apply(data_ERn,2,function(x){sum(!is.na(x))})
+TP53.ern<-as.numeric(ERn["TP53"])
+PIK3CA.ern<-as.numeric(ERn["PIK3CA"])
+MUC16.ern<-as.numeric(ERn["MUC16"])
+GATA3.ern<-as.numeric(ERn["GATA3"])
+AHNAK2.ern<-as.numeric(ERn["AHNAK2"])
+SYNE1.ern<-as.numeric(ERn["SYNE1"])
+KMT2C.ern<-as.numeric(ERn["KMT2C"])
+v7.4<-c(TP53.ern,PIK3CA.ern,MUC16.ern,GATA3.ern,AHNAK2.ern,SYNE1.ern,KMT2C.ern)
+###PR+
+PRp<-apply(data_PRp,2,function(x){sum(!is.na(x))})
+TP53.prp<-as.numeric(PRp["TP53"])
+PIK3CA.prp<-as.numeric(PRp["PIK3CA"])
+MUC16.prp<-as.numeric(PRp["MUC16"])
+GATA3.prp<-as.numeric(PRp["GATA3"])
+AHNAK2.prp<-as.numeric(PRp["AHNAK2"])
+SYNE1.prp<-as.numeric(PRp["SYNE1"])
+KMT2C.prp<-as.numeric(PRp["KMT2C"])
+v7.5<-c(TP53.prp,PIK3CA.prp,MUC16.prp,GATA3.prp,AHNAK2.prp,SYNE1.prp,KMT2C.prp)
+###PR-
+PRn<-apply(data_PRn,2,function(x){sum(!is.na(x))})
+TP53.prn<-as.numeric(PRn["TP53"])
+PIK3CA.prn<-as.numeric(PRn["PIK3CA"])
+MUC16.prn<-as.numeric(PRn["MUC16"])
+GATA3.prn<-as.numeric(PRn["GATA3"])
+AHNAK2.prn<-as.numeric(PRn["AHNAK2"])
+SYNE1.prn<-as.numeric(PRn["SYNE1"])
+KMT2C.prn<-as.numeric(PRn["KMT2C"])
+v7.6<-c(TP53.prn,PIK3CA.prn,MUC16.prn,GATA3.prn,AHNAK2.prn,SYNE1.prn,KMT2C.prn)
+```
+
+
+```{r}
+#HER2
+matrix4<-matrix(ncol=7,nrow=2)
+matrix4<-rbind(v7.1,v7.2)
+colnames(matrix4)<-c("TP53","PIK3CA","MUC16","GATA3","AHNAK2","SYNE1","KMT2C")
+rownames(matrix4)<-c("HER2+","HER2-")
+matrix4[is.na(matrix4)] <- 0
+
+chisq.test(matrix4)
+```
+
+```{r}
+#ER
+matrix5<-matrix(ncol=7,nrow=2)
+matrix5<-rbind(v7.3,v7.4)
+colnames(matrix5)<-c("TP53","PIK3CA","MUC16","GATA3","AHNAK2","SYNE1","KMT2C")
+rownames(matrix5)<-c("ER+","ER-")
+matrix5[is.na(matrix5)] <- 0
+
+chisq.test(matrix5)
+```
+```{r}
+#PR
+matrix6<-matrix(ncol=7,nrow=2)
+matrix6<-rbind(v7.5,v7.6)
+colnames(matrix6)<-c("TP53","PIK3CA","MUC16","GATA3","AHNAK2","SYNE1","KMT2C")
+rownames(matrix6)<-c("PR+","PR-")
+matrix6[is.na(matrix6)] <- 0
+
+chisq.test(matrix6)
+```
+
+A partir de este momento seguimos el estudio valorando la supervivencia de los pacientes.
+Es interesante ver la supervivencia entre los pacientes que presentan mutacion y los que no.
+
+Primeramente, se va a valorar la supervivencia en todos los pacientes que presentan mutacion y sin ella en los genes mas representativos, sin diferenciar subtipos.
+
+
+```{r}
+#TP53
+#Generamos las 3 variables que son tiempo, tp53 y muerte por cancer
+status <- data$DeathBreast #aislamos la informacion sobre la muerte de los pacientes
+time <- data$T/30 #tiempo en meses
+tp53 <- data$TP53 #datos para el gen TP53
+
+sum(table(tp53)) #recuento de los que tienen mutacion (diferente a NA)
+tp53<-ifelse(is.na(tp53), 0,1) #Ahora 1 es mutacion y 0 no.
+
+dfsurv <- data.frame(time, status, tp53) #Crear una tabla con las 3 variables que debemos analizar para este gen
+fit <- survfit(Surv(time, status) ~ tp53, data = dfsurv) #tabla con los eventos dados para pacientes mutados y no mutados en TP53
+
+pval <- surv_pvalue(fit) #p-valor para la diferencia entre pacientes mutados y no mutados y su supervivencia
+
+survplot(Surv(time, status) ~ tp53, data = dfsurv, col=c("blue", "red"), show.nrisk=F, hr.pos=NA, legend.pos = "topright", stitle=NA, cex=0.5,main = "Survival by TP53 mutation",ylab="Survival probability", xlab="Time in months")
+legend(x=0, y=0.2, legend=as.character(pval$pval.txt), cex=0.8, box.lty = 0)
+#Representacion de la supervivencia de pacientes con mutacion en TP53 y sin ella para todas las clasificaciones
+```
+
+
+```{r}
+#Supervivencia para el gen PIK3CA
+pik3ca<- data$PIK3CA
+sum(table(pik3ca)) 
+pik3ca<-ifelse(is.na(pik3ca),0,1)
+dfsurv2 <- data.frame(time, status, pik3ca) 
+fit2 <- survfit(Surv(time, status) ~ pik3ca, data = dfsurv2)
+pval <- surv_pvalue(fit2)
+survplot(Surv(time, status) ~ pik3ca, data = dfsurv2, col=c("blue", "red"), show.nrisk=F, hr.pos=NA, legend.pos = "topright", stitle=NA, cex=0.5,main = "Survival by PIK3CA mutation",ylab="Survival probability", xlab="Time in months")
+legend(x=0, y=0.2, legend=as.character(pval$pval.txt), cex=0.8, box.lty = 0)
+
+```
+
+
+```{r}
+#AHNAK2
+ahnak2<- data$AHNAK2
+sum(table(ahnak2)) 
+ahnak2<-ifelse(is.na(ahnak2),0,1)
+dfsurv3 <- data.frame(time, status, ahnak2) 
+fit3 <- survfit(Surv(time, status) ~ ahnak2, data = dfsurv3)
+pval <- surv_pvalue(fit3)
+survplot(Surv(time, status) ~ ahnak2, data = dfsurv3, col=c("blue", "red"), show.nrisk=F, hr.pos=NA, legend.pos = "topright", stitle=NA, cex=0.5,main = "Survival by AHNAK2 mutation",ylab="Survival probability", xlab="Time in months")
+legend(x=0, y=0.2, legend=as.character(pval$pval.txt), cex=0.8, box.lty = 0)
+
+```
+
+
+
+```{r}
+#GATA3
+gata3<- data$GATA3
+sum(table(gata3)) 
+gata3<-ifelse(is.na(gata3),0,1)
+dfsurv4 <- data.frame(time, status, gata3) 
+fit4 <- survfit(Surv(time, status) ~ gata3, data = dfsurv4)
+pval <- surv_pvalue(fit4)
+survplot(Surv(time, status) ~ gata3, data = dfsurv4, col=c("blue", "red"), show.nrisk=F, hr.pos=NA, legend.pos = "topright", stitle=NA, cex=0.5,main = "Survival by GATA3 mutation",ylab="Survival probability", xlab="Time in months")
+legend(x=0, y=0.2, legend=as.character(pval$pval.txt), cex=0.8, box.lty = 0)
+
+```
+
+
+```{r}
+#MUC16
+muc16<- data$MUC16
+sum(table(muc16)) 
+muc16<-ifelse(is.na(muc16),0,1)
+dfsurv5<- data.frame(time, status, muc16) 
+fit5 <- survfit(Surv(time, status) ~ muc16, data = dfsurv5)
+pval <- surv_pvalue(fit5)
+survplot(Surv(time, status) ~ muc16, data = dfsurv5, col=c("blue", "red"), show.nrisk=F, hr.pos=NA, legend.pos = "topright", stitle=NA, cex=0.5,main = "Survival by MUC16 mutation",ylab="Survival probability", xlab="Time in months")
+legend(x=0, y=0.2, legend=as.character(pval$pval.txt), cex=0.8, box.lty = 0)
+```
+
+```{r}
+#CDH1
+cdh1<- data$CDH1
+sum(table(cdh1)) 
+cdh1<-ifelse(is.na(cdh1),0,1)
+dfsurv6<- data.frame(time, status, cdh1) 
+fit6 <- survfit(Surv(time, status) ~ cdh1, data = dfsurv6)
+pval <- surv_pvalue(fit6)
+survplot(Surv(time, status) ~ cdh1, data = dfsurv6, col=c("blue", "red"), show.nrisk=F, hr.pos=NA, legend.pos = "topright", stitle=NA, cex=0.5,main = "Survival by CDH1 mutation",ylab="Survival probability", xlab="Time in months")
+legend(x=0, y=0.2, legend=as.character(pval$pval.txt), cex=0.8, box.lty = 0)
+```
+
+
+```{r}
+#SYNE1
+syne1<- data$SYNE1
+sum(table(syne1)) 
+syne1<-ifelse(is.na(syne1),0,1)
+dfsurv7<- data.frame(time, status, syne1) 
+fit7 <- survfit(Surv(time, status) ~ syne1, data = dfsurv7)
+pval <- surv_pvalue(fit7)
+survplot(Surv(time, status) ~ syne1, data = dfsurv7, col=c("blue", "red"), show.nrisk=F, hr.pos=NA, legend.pos = "topright", stitle=NA, cex=0.5,main = "Survival by SYNE1 mutation",ylab="Survival probability", xlab="Time in months")
+legend(x=0, y=0.2, legend=as.character(pval$pval.txt), cex=0.8, box.lty = 0)
+
+```
+
+```{r}
+#AHNAK
+ahnak<- data$AHNAK
+sum(table(ahnak)) 
+ahnak<-ifelse(is.na(ahnak),0,1)
+dfsurv8<- data.frame(time, status, ahnak) 
+fit8 <- survfit(Surv(time, status) ~ ahnak, data = dfsurv8)
+pval <- surv_pvalue(fit8)
+survplot(Surv(time, status) ~ syne1, data = dfsurv8, col=c("blue", "red"), show.nrisk=F, hr.pos=NA, legend.pos = "topright", stitle=NA, cex=0.5,main = "Survival by AHNAK mutation",ylab="Survival probability", xlab="Time in months")
+legend(x=0, y=0.2, legend=as.character(pval$pval.txt), cex=0.8, box.lty = 0)
+```
+
+```{r}
+#KMT2C
+kmt2c<- data$KMT2C
+sum(table(kmt2c)) 
+kmt2c<-ifelse(is.na(kmt2c),0,1)
+dfsurv9<- data.frame(time, status, kmt2c) 
+fit9 <- survfit(Surv(time, status) ~ kmt2c, data = dfsurv9)
+pval <- surv_pvalue(fit9)
+survplot(Surv(time, status) ~ syne1, data = dfsurv9, col=c("blue", "red"), show.nrisk=F, hr.pos=NA, legend.pos = "topright", stitle=NA, cex=0.5,main = "Survival by KMT2C mutation",ylab="Survival probability", xlab="Time in months")
+legend(x=0, y=0.2, legend=as.character(pval$pval.txt), cex=0.8, box.lty = 0)
+```
+
+Evaluando los pacientes sun atender a subtipos unicamente salen significativos TP53 y GATA3, por lo que es interesante valorarlo por subtipos.
+
+Evaluacion de supervivencia por clasificaciones:
+
+```{r}
+#PAM50 en todos sus subtipos
+
+status <- data$DeathBreast #aislamos la informacion sobre la muerte de los pacientes
+time <- data$T/30 #tiempo en meses
+dfsurvp50 <- data.frame(time, status, subtype=data$Pam50Subtype) #Variables a representar
+fitt <- survfit(Surv(time, status) ~ subtype, data = dfsurvp50) #Enfrentar variables y subtipos
+pval <- surv_pvalue(fitt) #Pvalor
+ggsurvplot(fitt, title="Survival by Pam50 subtypes", xlab = "Follow Up Time (Months)", conf.int = FALSE, pval=TRUE, pval.method=FALSE, risk.table=FALSE, risk.table.pos="out", risk.table.col="black", risk.table.y.text.col=FALSE, tables.theme = theme_cleantable(), legend.labs=c("Basal","Her2", "LumA", "LumB", "Normal"), font.tickslab = c(12), legend.title="", ggtheme = theme_classic2(base_size=12, base_family = "Arial"), font.family = "Arial", linetype=1, censor=F) #Representar
+```
+
+```{r}
+#Histologica
+dfsurvh<- data.frame(time, status, subtype=data$Histological.Type)
+fitt <- survfit(Surv(time, status) ~ subtype, data = dfsurvh) 
+pval <- surv_pvalue(fitt)
+ggsurvplot(fitt, title="Survival by histological subtypes", xlab = "Follow Up Time (Months)", conf.int = FALSE, pval=TRUE, pval.method=FALSE, risk.table=FALSE, risk.table.pos="out", risk.table.col="black", risk.table.y.text.col=FALSE, tables.theme = theme_cleantable(), legend.labs=c("Benign","DCIS", "IDC", "IDC-MED", "IDC-MUC","IDC-TUB","IDC+ILC","ILC","INVASIVE TUMOUR","OTHER INVASIVE"), font.tickslab = c(12), legend.title="", ggtheme = theme_classic2(base_size=12, base_family = "Arial"), font.family = "Arial", linetype=1, censor=F)
+```
+
+
+```{r}
+#Claudin subtype
+dfsurvh<- data.frame(time, status, subtype=data$ClaudinSubtype)
+fitt <- survfit(Surv(time, status) ~ subtype, data = dfsurvh) 
+pval <- surv_pvalue(fitt)
+ggsurvplot(fitt, title="Survival by Claudin subtype", xlab = "Follow Up Time (Months)", conf.int = FALSE, pval=TRUE, pval.method=FALSE, risk.table=FALSE, risk.table.pos="out", risk.table.col="black", risk.table.y.text.col=FALSE, tables.theme = theme_cleantable(), legend.labs=c("LumA","LumB", "Basal", "claudin-low", "Her2","Normal"), font.tickslab = c(12), legend.title="", ggtheme = theme_classic2(base_size=12, base_family = "Arial"), font.family = "Arial", linetype=1, censor=F)
+```
+
+```{r}
+#ER+ y ER-
+dfsurvER<- data.frame(time, status, subtype=data$ER.Expr)
+fitt <- survfit(Surv(time, status) ~ subtype, data = dfsurvER) 
+pval <- surv_pvalue(fitt)
+ggsurvplot(fitt, title="Survival by ER expression subtypes", xlab = "Follow Up Time (Months)", conf.int = FALSE, pval=TRUE, pval.method=FALSE, risk.table=FALSE, risk.table.pos="out", risk.table.col="black", risk.table.y.text.col=FALSE, tables.theme = theme_cleantable(), legend.labs=c("ER-","ER+"), font.tickslab = c(12), legend.title="", ggtheme = theme_classic2(base_size=12, base_family = "Arial"), font.family = "Arial", linetype=1, censor=F)
+
+```
+
+```{r}
+#PR+ y PR-
+dfsurvPR<- data.frame(time, status, subtype=data$PR.Expr)
+fitt <- survfit(Surv(time, status) ~ subtype, data = dfsurvPR) 
+pval <- surv_pvalue(fitt)
+ggsurvplot(fitt, title="Survival by PR expression subtypes", xlab = "Follow Up Time (Months)", conf.int = FALSE, pval=TRUE, pval.method=FALSE, risk.table=FALSE, risk.table.pos="out", risk.table.col="black", risk.table.y.text.col=FALSE, tables.theme = theme_cleantable(), legend.labs=c("PR-","PR+"), font.tickslab = c(12), legend.title="", ggtheme = theme_classic2(base_size=12, base_family = "Arial"), font.family = "Arial", linetype=1, censor=F)
+```
+
+
+```{r}
+#HER2+ y HER2-
+dfsurvHER<- data.frame(time, status, subtype=data$Her2.Expr)
+fitt <- survfit(Surv(time, status) ~ subtype, data = dfsurvHER) 
+pval <- surv_pvalue(fitt)
+ggsurvplot(fitt, title="Survival by HER2 expression subtypes", xlab = "Follow Up Time (Months)", conf.int = FALSE, pval=TRUE, pval.method=FALSE, risk.table=FALSE, risk.table.pos="out", risk.table.col="black", risk.table.y.text.col=FALSE, tables.theme = theme_cleantable(), legend.labs=c("HER2-","HER2+"), font.tickslab = c(12), legend.title="", ggtheme = theme_classic2(base_size=12, base_family = "Arial"), font.family = "Arial", linetype=1, censor=F)
+
+```
+
+
+Ahora vamos a ver la supervivencia de los pacientes pertenecientes a cada subtipo de PAM50 con mutacion en cada uno de los genes y sin la misma:
+
+ANALISIS DE SUPERVIVENCIA EN PAM50 PARA PACIENTES LUMA:
+
+```{r}
+###MUC16 en LUMA
+data.PAM50.LumA<-data[data$Pam50Subtype=="LumA",c("Pam50Subtype","DeathBreast","T","MUC16","TP53","PIK3CA","GATA3","AHNAK2","SYNE1","CDH1")] #Voy a aislar primero LumA para los 2 genes que quiero analizar primero
+status <- data.PAM50.LumA$DeathBreast #aislamos la informacion sobre la muerte de los pacientes
+time <- data.PAM50.LumA$T/30 #tiempo en meses
+
+LumA.MUC16 <- data.PAM50.LumA$MUC16 #datos para el gen MUC16
+
+sum(table(LumA.MUC16)) #recuento de los que tienen mutacion (diferente a NA)
+LumA.MUC16<-ifelse(is.na(LumA.MUC16), 0,1) #Ahora 1 es mutacion y 0 no.
+
+dfsurv <- data.frame(time, status, LumA.MUC16) #Crear una tabla con las 3 variables que debemos analizar para este gen
+head(dfsurv)
+
+
+#MUC16
+fit <- survfit(Surv(time, status) ~ LumA.MUC16, data = dfsurv) #tabla con los eventos dados para pacientes mutados y no mutados en TP53
+
+pval <- surv_pvalue(fit) #p-valor para la diferencia entre pacientes mutados y no mutados y su supervivencia
+
+survplot(Surv(time, status) ~ LumA.MUC16, data = dfsurv, col=c("blue", "red"), show.nrisk=F, hr.pos=NA, legend.pos = "topright", stitle=NA, cex=0.5,main = "Survival by MUC16 mutation in PAM50 LumA",ylab="Survival probability", xlab="Time in months")
+legend(x=0, y=0.2, legend=as.character(pval$pval.txt), cex=0.8, box.lty = 0)
+
+```
+
+```{r}
+###TP53
+LumA.TP53 <- data.PAM50.LumA$TP53
+sum(table(LumA.TP53))
+LumA.TP53<-ifelse(is.na(LumA.TP53), 0,1)
+dfsurv <- data.frame(time, status, LumA.TP53)
+head(dfsurv)
+fit <- survfit(Surv(time, status) ~ LumA.TP53, data = dfsurv)
+pval <- surv_pvalue(fit)
+
+survplot(Surv(time, status) ~ LumA.TP53, data = dfsurv, col=c("blue", "red"), show.nrisk=F, hr.pos=NA, legend.pos = "topright", stitle=NA, cex=0.5,main = "Survival by TP53 mutation in PAM50 LumA",ylab="Survival probability", xlab="Time in months")
+legend(x=0, y=0.2, legend=as.character(pval$pval.txt), cex=0.8, box.lty = 0)
+```
+```{r}
+###PIK3CA
+LumA.PIK3CA <- data.PAM50.LumA$PIK3CA
+sum(table(LumA.PIK3CA))
+LumA.PIK3CA<-ifelse(is.na(LumA.PIK3CA), 0,1)
+dfsurv <- data.frame(time, status, LumA.PIK3CA)
+head(dfsurv)
+fit <- survfit(Surv(time, status) ~ LumA.PIK3CA, data = dfsurv)
+pval <- surv_pvalue(fit)
+survplot(Surv(time, status) ~ LumA.PIK3CA, data = dfsurv, col=c("blue", "red"), show.nrisk=F, hr.pos=NA, legend.pos = "topright", stitle=NA, cex=0.5,main = "Survival by PIK3CA mutation in PAM50 LumA",ylab="Survival probability", xlab="Time in months")
+legend(x=0, y=0.2, legend=as.character(pval$pval.txt), cex=0.8, box.lty = 0)
+```
+
+```{r}
+###AHNAK2
+LumA.AHNAK2 <- data.PAM50.LumA$AHNAK2
+sum(table(LumA.AHNAK2))
+LumA.AHNAK2<-ifelse(is.na(LumA.AHNAK2), 0,1)
+dfsurv <- data.frame(time, status, LumA.AHNAK2)
+head(dfsurv)
+fit <- survfit(Surv(time, status) ~ LumA.AHNAK2, data = dfsurv)
+pval <- surv_pvalue(fit)
+survplot(Surv(time, status) ~ LumA.AHNAK2, data = dfsurv, col=c("blue", "red"), show.nrisk=F, hr.pos=NA, legend.pos = "topright", stitle=NA, cex=0.5,main = "Survival by AHNAK2 mutation in PAM50 LumA",ylab="Survival probability", xlab="Time in months")
+legend(x=0, y=0.2, legend=as.character(pval$pval.txt), cex=0.8, box.lty = 0)
+```
+
+```{r}
+###SYNE1
+LumA.SYNE1 <- data.PAM50.LumA$SYNE1
+sum(table(LumA.SYNE1))
+LumA.SYNE1<-ifelse(is.na(LumA.SYNE1), 0,1)
+dfsurv <- data.frame(time, status, LumA.SYNE1)
+head(dfsurv)
+fit <- survfit(Surv(time, status) ~ LumA.SYNE1, data = dfsurv)
+pval <- surv_pvalue(fit)
+survplot(Surv(time, status) ~ LumA.SYNE1, data = dfsurv, col=c("blue", "red"), show.nrisk=F, hr.pos=NA, legend.pos = "topright", stitle=NA, cex=0.5,main = "Survival by SYNE1 mutation in PAM50 LumA",ylab="Survival probability", xlab="Time in months")
+legend(x=0, y=0.2, legend=as.character(pval$pval.txt), cex=0.8, box.lty = 0)
+```
+
+```{r}
+###CDH1
+LumA.CDH1 <- data.PAM50.LumA$CDH1
+sum(table(LumA.CDH1))
+LumA.CDH1<-ifelse(is.na(LumA.CDH1), 0,1)
+dfsurv <- data.frame(time, status, LumA.CDH1)
+head(dfsurv)
+fit <- survfit(Surv(time, status) ~ LumA.CDH1, data = dfsurv)
+pval <- surv_pvalue(fit)
+survplot(Surv(time, status) ~ LumA.CDH1, data = dfsurv, col=c("blue", "red"), show.nrisk=F, hr.pos=NA, legend.pos = "topright", stitle=NA, cex=0.5,main = "Survival by CDH1 mutation in PAM50 LumA",ylab="Survival probability", xlab="Time in months")
+legend(x=0, y=0.2, legend=as.character(pval$pval.txt), cex=0.8, box.lty = 0)
+```
+
+```{r}
+###GATA3
+LumA.GATA3 <- data.PAM50.LumA$GATA3
+sum(table(LumA.GATA3))
+LumA.GATA3<-ifelse(is.na(LumA.GATA3), 0,1)
+dfsurv <- data.frame(time, status, LumA.GATA3)
+head(dfsurv)
+fit <- survfit(Surv(time, status) ~ LumA.GATA3, data = dfsurv)
+pval <- surv_pvalue(fit)
+survplot(Surv(time, status) ~ LumA.GATA3, data = dfsurv, col=c("blue", "red"), show.nrisk=F, hr.pos=NA, legend.pos = "topright", stitle=NA, cex=0.5,main = "Survival by GATA3 mutation in PAM50 LumA",ylab="Survival probability", xlab="Time in months")
+legend(x=0, y=0.2, legend=as.character(pval$pval.txt), cex=0.8, box.lty = 0)
+```
+
+
+
+SUPERVIVENCIA EN PACIENTES LUMB
+```{r}
+##MUC16
+
+data.PAM50.LumB<-data[data$Pam50Subtype=="LumB",c("Pam50Subtype","DeathBreast","T","MUC16","TP53","GATA3","PIK3CA","AHNAK2","SYNE1", "CDH1")]
+status <- data.PAM50.LumB$DeathBreast 
+time <- data.PAM50.LumB$T/30 #tiempo en meses
+LumB.MUC16 <- data.PAM50.LumB$MUC16 #datos para el gen MUC16
+
+sum(table(LumB.MUC16)) #recuento de los que tienen mutacion (diferente a NA)
+LumB.MUC16<-ifelse(is.na(LumB.MUC16), 0,1) #Ahora 1 es mutacion y 0 no.
+
+dfsurv <- data.frame(time, status, LumB.MUC16) #Crear una tabla con las 3 variables que debemos analizar para este gen
+head(dfsurv)
+
+fit <- survfit(Surv(time, status) ~ LumB.MUC16, data = dfsurv) #tabla con los eventos dados para pacientes mutados y no mutados en TP53
+
+pval <- surv_pvalue(fit) #p-valor para la diferencia entre pacientes mutados y no mutados y su supervivencia
+
+survplot(Surv(time, status) ~ LumB.MUC16, data = dfsurv, col=c("blue", "red"), show.nrisk=F, hr.pos=NA, legend.pos = "topright", stitle=NA, cex=0.5,main = "Survival by MUC16 mutation in PAM50 LumB",ylab="Survival probability", xlab="Time in months")
+legend(x=0, y=0.2, legend=as.character(pval$pval.txt), cex=0.8, box.lty = 0)
+```
+
+```{r}
+##TP53
+LumB.TP53 <- data.PAM50.LumB$TP53
+LumB.TP53<-ifelse(is.na(LumB.TP53), 0,1) 
+dfsurv <- data.frame(time, status, LumB.TP53)
+fit <- survfit(Surv(time, status) ~ LumB.TP53, data = dfsurv)
+pval <- surv_pvalue(fit)
+
+survplot(Surv(time, status) ~ LumB.TP53, data = dfsurv, col=c("blue", "red"), show.nrisk=F, hr.pos=NA, legend.pos = "topright", stitle=NA, cex=0.5,main = "Survival by TP53 mutation in PAM50 LumB",ylab="Survival probability", xlab="Time in months")
+legend(x=0, y=0.2, legend=as.character(pval$pval.txt), cex=0.8, box.lty = 0)
+```
+
+
+```{r}
+##PIK3CA
+LumB.PIK3CA <- data.PAM50.LumB$PIK3CA
+LumB.PIK3CA<-ifelse(is.na(LumB.PIK3CA), 0,1) 
+dfsurv <- data.frame(time, status, LumB.PIK3CA)
+fit <- survfit(Surv(time, status) ~ LumB.PIK3CA, data = dfsurv)
+pval <- surv_pvalue(fit)
+
+survplot(Surv(time, status) ~ LumB.PIK3CA, data = dfsurv, col=c("blue", "red"), show.nrisk=F, hr.pos=NA, legend.pos = "topright", stitle=NA, cex=0.5,main = "Survival by PIK3CA mutation in PAM50 LumB",ylab="Survival probability", xlab="Time in months")
+legend(x=0, y=0.2, legend=as.character(pval$pval.txt), cex=0.8, box.lty = 0)
+```
+```{r}
+##AHNAK2
+LumB.AHNAK2 <- data.PAM50.LumB$AHNAK2
+LumB.AHNAK2<-ifelse(is.na(LumB.AHNAK2), 0,1) 
+dfsurv <- data.frame(time, status, LumB.AHNAK2)
+fit <- survfit(Surv(time, status) ~ LumB.AHNAK2, data = dfsurv)
+pval <- surv_pvalue(fit)
+
+survplot(Surv(time, status) ~ LumB.AHNAK2, data = dfsurv, col=c("blue", "red"), show.nrisk=F, hr.pos=NA, legend.pos = "topright", stitle=NA, cex=0.5,main = "Survival by AHNAK2 mutation in PAM50 LumB",ylab="Survival probability", xlab="Time in months")
+legend(x=0, y=0.2, legend=as.character(pval$pval.txt), cex=0.8, box.lty = 0)
+```
+
+
+```{r}
+##SYNE1
+LumB.SYNE1 <- data.PAM50.LumB$SYNE1
+LumB.SYNE1<-ifelse(is.na(LumB.SYNE1), 0,1) 
+dfsurv <- data.frame(time, status, LumB.SYNE1)
+fit <- survfit(Surv(time, status) ~ LumB.SYNE1, data = dfsurv)
+pval <- surv_pvalue(fit)
+
+survplot(Surv(time, status) ~ LumB.SYNE1, data = dfsurv, col=c("blue", "red"), show.nrisk=F, hr.pos=NA, legend.pos = "topright", stitle=NA, cex=0.5,main = "Survival by SYNE1 mutation in PAM50 LumB",ylab="Survival probability", xlab="Time in months")
+legend(x=0, y=0.2, legend=as.character(pval$pval.txt), cex=0.8, box.lty = 0)
+```
+
+```{r}
+##CDH1
+LumB.CDH1 <- data.PAM50.LumB$CDH1
+LumB.CDH1<-ifelse(is.na(LumB.CDH1), 0,1) 
+dfsurv <- data.frame(time, status, LumB.CDH1)
+fit <- survfit(Surv(time, status) ~ LumB.CDH1, data = dfsurv)
+pval <- surv_pvalue(fit)
+
+survplot(Surv(time, status) ~ LumB.CDH1, data = dfsurv, col=c("blue", "red"), show.nrisk=F, hr.pos=NA, legend.pos = "topright", stitle=NA, cex=0.5,main = "Survival by CDH1 mutation in PAM50 LumB",ylab="Survival probability", xlab="Time in months")
+legend(x=0, y=0.2, legend=as.character(pval$pval.txt), cex=0.8, box.lty = 0)
+```
+
+```{r}
+##GATA3
+LumB.GATA3 <- data.PAM50.LumB$GATA3
+LumB.GATA3<-ifelse(is.na(LumB.GATA3), 0,1) 
+dfsurv <- data.frame(time, status, LumB.GATA3)
+fit <- survfit(Surv(time, status) ~ LumB.GATA3, data = dfsurv)
+pval <- surv_pvalue(fit)
+
+survplot(Surv(time, status) ~ LumB.GATA3, data = dfsurv, col=c("blue", "red"), show.nrisk=F, hr.pos=NA, legend.pos = "topright", stitle=NA, cex=0.5,main = "Survival by GATA3 mutation in PAM50 LumB",ylab="Survival probability", xlab="Time in months")
+legend(x=0, y=0.2, legend=as.character(pval$pval.txt), cex=0.8, box.lty = 0)
+```
+
+SUPERVIVENCIA EN EL SUBTIPO BASAL:
+
+```{r}
+
+##MUC16
+data.PAM50.Basal<-data[data$Pam50Subtype=="Basal",c("Pam50Subtype","DeathBreast","T","MUC16","TP53","GATA3","PIK3CA","AHNAK2","SYNE1", "CDH1")]
+status <- data.PAM50.Basal$DeathBreast 
+time <- data.PAM50.Basal$T/30 #tiempo en meses
+
+Basal.MUC16 <- data.PAM50.Basal$MUC16 #datos para el gen MUC16
+
+sum(table(Basal.MUC16)) #recuento de los que tienen mutacion (diferente a NA)
+Basal.MUC16<-ifelse(is.na(Basal.MUC16), 0,1) #Ahora 1 es mutacion y 0 no.
+
+dfsurv <- data.frame(time, status, Basal.MUC16) #Crear una tabla con las 3 variables que debemos analizar para este gen
+head(dfsurv)
+
+fit <- survfit(Surv(time, status) ~ Basal.MUC16, data = dfsurv) #tabla con los eventos dados para pacientes mutados y no mutados en TP53
+
+pval <- surv_pvalue(fit) #p-valor para la diferencia entre pacientes mutados y no mutados y su supervivencia
+
+survplot(Surv(time, status) ~ Basal.MUC16, data = dfsurv, col=c("blue", "red"), show.nrisk=F, hr.pos=NA, legend.pos = "topright", stitle=NA, cex=0.5,main = "Survival by MUC16 mutation in PAM50 Basal",ylab="Survival probability", xlab="Time in months")
+legend(x=0, y=0.2, legend=as.character(pval$pval.txt), cex=0.8, box.lty = 0)
+```
+
+```{r}
+##TP53
+
+Basal.TP53 <- data.PAM50.Basal$TP53
+sum(table(Basal.TP53))
+Basal.TP53<-ifelse(is.na(Basal.TP53), 0,1)
+dfsurv <- data.frame(time, status, Basal.TP53) 
+head(dfsurv)
+fit <- survfit(Surv(time, status) ~ Basal.TP53, data = dfsurv) 
+pval <- surv_pvalue(fit) 
+survplot(Surv(time, status) ~ Basal.TP53, data = dfsurv, col=c("blue", "red"), show.nrisk=F, hr.pos=NA, legend.pos = "topright", stitle=NA, cex=0.5,main = "Survival by TP53 mutation in PAM50 Basal",ylab="Survival probability", xlab="Time in months")
+legend(x=0, y=0.2, legend=as.character(pval$pval.txt), cex=0.8, box.lty = 0)
+```
+
+```{r}
+##PIK3CA
+
+Basal.PIK3CA <- data.PAM50.Basal$PIK3CA
+sum(table(Basal.PIK3CA))
+Basal.PIK3CA<-ifelse(is.na(Basal.PIK3CA), 0,1)
+dfsurv <- data.frame(time, status, Basal.PIK3CA) 
+head(dfsurv)
+fit <- survfit(Surv(time, status) ~ Basal.PIK3CA, data = dfsurv) 
+pval <- surv_pvalue(fit) 
+survplot(Surv(time, status) ~ Basal.PIK3CA, data = dfsurv, col=c("blue", "red"), show.nrisk=F, hr.pos=NA, legend.pos = "topright", stitle=NA, cex=0.5,main = "Survival by PIK3CA mutation in PAM50 Basal",ylab="Survival probability", xlab="Time in months")
+legend(x=0, y=0.2, legend=as.character(pval$pval.txt), cex=0.8, box.lty = 0)
+```
+
+```{r}
+##AHNAK2
+
+Basal.AHNAK2 <- data.PAM50.Basal$AHNAK2
+sum(table(Basal.AHNAK2))
+Basal.AHNAK2<-ifelse(is.na(Basal.AHNAK2), 0,1)
+dfsurv <- data.frame(time, status, Basal.AHNAK2) 
+head(dfsurv)
+fit <- survfit(Surv(time, status) ~ Basal.AHNAK2, data = dfsurv) 
+pval <- surv_pvalue(fit) 
+survplot(Surv(time, status) ~ Basal.AHNAK2, data = dfsurv, col=c("blue", "red"), show.nrisk=F, hr.pos=NA, legend.pos = "topright", stitle=NA, cex=0.5,main = "Survival by AHNAK2 mutation in PAM50 Basal",ylab="Survival probability", xlab="Time in months")
+legend(x=0, y=0.2, legend=as.character(pval$pval.txt), cex=0.8, box.lty = 0)
+```
+```{r}
+### SYNE1
+
+Basal.SYNE1 <- data.PAM50.Basal$SYNE1
+sum(table(Basal.SYNE1))
+Basal.SYNE1<-ifelse(is.na(Basal.SYNE1), 0,1)
+dfsurv <- data.frame(time, status, Basal.SYNE1) 
+head(dfsurv)
+fit <- survfit(Surv(time, status) ~ Basal.SYNE1, data = dfsurv) 
+pval <- surv_pvalue(fit) 
+survplot(Surv(time, status) ~ Basal.SYNE1, data = dfsurv, col=c("blue", "red"), show.nrisk=F, hr.pos=NA, legend.pos = "topright", stitle=NA, cex=0.5,main = "Survival by SYNE1 mutation in PAM50 Basal",ylab="Survival probability", xlab="Time in months")
+legend(x=0, y=0.2, legend=as.character(pval$pval.txt), cex=0.8, box.lty = 0)
+```
+
+```{r}
+###CDH1
+Basal.CDH1 <- data.PAM50.Basal$CDH1
+sum(table(Basal.CDH1))
+Basal.CDH1<-ifelse(is.na(Basal.CDH1), 0,1)
+dfsurv <- data.frame(time, status, Basal.CDH1) 
+head(dfsurv)
+fit <- survfit(Surv(time, status) ~ Basal.CDH1, data = dfsurv) 
+pval <- surv_pvalue(fit) 
+survplot(Surv(time, status) ~ Basal.CDH1, data = dfsurv, col=c("blue", "red"), show.nrisk=F, hr.pos=NA, legend.pos = "topright", stitle=NA, cex=0.5,main = "Survival by CDH1 mutation in PAM50 Basal",ylab="Survival probability", xlab="Time in months")
+legend(x=0, y=0.2, legend=as.character(pval$pval.txt), cex=0.8, box.lty = 0)
+```
+
+```{r}
+###GATA3
+
+Basal.GATA3 <- data.PAM50.Basal$GATA3
+sum(table(Basal.GATA3))
+Basal.GATA3<-ifelse(is.na(Basal.GATA3), 0,1)
+dfsurv <- data.frame(time, status, Basal.GATA3) 
+head(dfsurv)
+fit <- survfit(Surv(time, status) ~ Basal.GATA3, data = dfsurv) 
+pval <- surv_pvalue(fit) 
+survplot(Surv(time, status) ~ Basal.GATA3, data = dfsurv, col=c("blue", "red"), show.nrisk=F, hr.pos=NA, legend.pos = "topright", stitle=NA, cex=0.5,main = "Survival by GATA3 mutation in PAM50 Basal",ylab="Survival probability", xlab="Time in months")
+legend(x=0, y=0.2, legend=as.character(pval$pval.txt), cex=0.8, box.lty = 0)
+```
+
+SUPERVIVENCIA EN SUBTIPO NORMAL:
+```{r}
+
+data.PAM50.Normal<-data[data$Pam50Subtype=="Normal",c("Pam50Subtype","DeathBreast","T","MUC16","TP53","GATA3","PIK3CA","AHNAK2","SYNE1", "CDH1")]
+status <- data.PAM50.Normal$DeathBreast 
+time <- data.PAM50.Normal$T/30 #tiempo en meses
+
+Normal.MUC16 <- data.PAM50.Normal$MUC16 #datos para el gen MUC16
+
+sum(table(Normal.MUC16)) #recuento de los que tienen mutacion (diferente a NA)
+Normal.MUC16<-ifelse(is.na(Normal.MUC16), 0,1) #Ahora 1 es mutacion y 0 no.
+
+dfsurv <- data.frame(time, status, Normal.MUC16) #Crear una tabla con las 3 variables que debemos analizar para este gen
+head(dfsurv)
+
+fit <- survfit(Surv(time, status) ~ Normal.MUC16, data = dfsurv) #tabla con los eventos dados para pacientes mutados y no mutados en TP53
+
+pval <- surv_pvalue(fit) #p-valor para la diferencia entre pacientes mutados y no mutados y su supervivencia
+
+survplot(Surv(time, status) ~ Normal.MUC16, data = dfsurv, col=c("blue", "red"), show.nrisk=F, hr.pos=NA, legend.pos = "topright", stitle=NA, cex=0.5,main = "Survival by MUC16 mutation in PAM50 Normal",ylab="Survival probability", xlab="Time in months")
+legend(x=0, y=0.2, legend=as.character(pval$pval.txt), cex=0.8, box.lty = 0)
+```
+
+```{r}
+
+Normal.TP53 <- data.PAM50.Normal$TP53
+sum(table(Normal.TP53))
+Normal.TP53<-ifelse(is.na(Normal.TP53), 0,1)
+dfsurv <- data.frame(time, status, Normal.TP53)
+head(dfsurv)
+fit <- survfit(Surv(time, status) ~ Normal.TP53, data = dfsurv)
+pval <- surv_pvalue(fit) 
+survplot(Surv(time, status) ~ Normal.TP53, data = dfsurv, col=c("blue", "red"), show.nrisk=F, hr.pos=NA, legend.pos = "topright", stitle=NA, cex=0.5,main = "Survival by TP53 mutation in PAM50 Normal",ylab="Survival probability", xlab="Time in months")
+legend(x=0, y=0.2, legend=as.character(pval$pval.txt), cex=0.8, box.lty = 0)
+```
+
+```{r}
+##PIK3CA
+
+Normal.PIK3CA <- data.PAM50.Normal$PIK3CA
+sum(table(Normal.PIK3CA))
+Normal.PIK3CA<-ifelse(is.na(Normal.PIK3CA), 0,1)
+dfsurv <- data.frame(time, status, Normal.PIK3CA)
+head(dfsurv)
+fit <- survfit(Surv(time, status) ~ Normal.PIK3CA, data = dfsurv)
+pval <- surv_pvalue(fit) 
+survplot(Surv(time, status) ~ Normal.PIK3CA, data = dfsurv, col=c("blue", "red"), show.nrisk=F, hr.pos=NA, legend.pos = "topright", stitle=NA, cex=0.5,main = "Survival by PIK3CA mutation in PAM50 Normal",ylab="Survival probability", xlab="Time in months")
+legend(x=0, y=0.2, legend=as.character(pval$pval.txt), cex=0.8, box.lty = 0)
+```
+```{r}
+###AHNAK2
+
+Normal.AHNAK2 <- data.PAM50.Normal$AHNAK2
+sum(table(Normal.AHNAK2))
+Normal.AHNAK2<-ifelse(is.na(Normal.AHNAK2), 0,1)
+dfsurv <- data.frame(time, status, Normal.AHNAK2)
+head(dfsurv)
+fit <- survfit(Surv(time, status) ~ Normal.AHNAK2, data = dfsurv)
+pval <- surv_pvalue(fit) 
+survplot(Surv(time, status) ~ Normal.AHNAK2, data = dfsurv, col=c("blue", "red"), show.nrisk=F, hr.pos=NA, legend.pos = "topright", stitle=NA, cex=0.5,main = "Survival by AHNAK2 mutation in PAM50 Normal",ylab="Survival probability", xlab="Time in months")
+legend(x=0, y=0.2, legend=as.character(pval$pval.txt), cex=0.8, box.lty = 0)
+```
+
+
+```{r}
+##SYNE1
+
+Normal.SYNE1 <- data.PAM50.Normal$SYNE1
+sum(table(Normal.SYNE1))
+Normal.SYNE1<-ifelse(is.na(Normal.SYNE1), 0,1)
+dfsurv <- data.frame(time, status, Normal.SYNE1)
+head(dfsurv)
+fit <- survfit(Surv(time, status) ~ Normal.SYNE1, data = dfsurv)
+pval <- surv_pvalue(fit) 
+survplot(Surv(time, status) ~ Normal.SYNE1, data = dfsurv, col=c("blue", "red"), show.nrisk=F, hr.pos=NA, legend.pos = "topright", stitle=NA, cex=0.5,main = "Survival by SYNE1 mutation in PAM50 Normal",ylab="Survival probability", xlab="Time in months")
+legend(x=0, y=0.2, legend=as.character(pval$pval.txt), cex=0.8, box.lty = 0)
+```
+
+```{r}
+#CDH1
+Normal.CDH1 <- data.PAM50.Normal$CDH1
+sum(table(Normal.CDH1))
+Normal.CDH1<-ifelse(is.na(Normal.CDH1), 0,1)
+dfsurv <- data.frame(time, status, Normal.CDH1)
+head(dfsurv)
+fit <- survfit(Surv(time, status) ~ Normal.CDH1, data = dfsurv)
+pval <- surv_pvalue(fit) 
+survplot(Surv(time, status) ~ Normal.CDH1, data = dfsurv, col=c("blue", "red"), show.nrisk=F, hr.pos=NA, legend.pos = "topright", stitle=NA, cex=0.5,main = "Survival by CDH1 mutation in PAM50 Normal",ylab="Survival probability", xlab="Time in months")
+legend(x=0, y=0.2, legend=as.character(pval$pval.txt), cex=0.8, box.lty = 0)
+```
+
+
+```{r}
+###GATA3
+
+Normal.GATA3 <- data.PAM50.Normal$GATA3
+sum(table(Normal.GATA3))
+Normal.GATA3<-ifelse(is.na(Normal.GATA3), 0,1)
+dfsurv <- data.frame(time, status, Normal.GATA3)
+head(dfsurv)
+fit <- survfit(Surv(time, status) ~ Normal.GATA3, data = dfsurv)
+pval <- surv_pvalue(fit) 
+survplot(Surv(time, status) ~ Normal.GATA3, data = dfsurv, col=c("blue", "red"), show.nrisk=F, hr.pos=NA, legend.pos = "topright", stitle=NA, cex=0.5,main = "Survival by GATA3 mutation in PAM50 Normal",ylab="Survival probability", xlab="Time in months")
+legend(x=0, y=0.2, legend=as.character(pval$pval.txt), cex=0.8, box.lty = 0)
+```
+
+
+SUPERVIVENCIA EN HER2:
+```{r}
+##MUC16
+
+data.PAM50.Her2<-data[data$Pam50Subtype=="Her2",c("Pam50Subtype","DeathBreast","T","MUC16","TP53","GATA3","PIK3CA","AHNAK2","SYNE1", "CDH1")]
+status <- data.PAM50.Her2$DeathBreast 
+time <- data.PAM50.Her2$T/30 
+
+Her2.MUC16 <- data.PAM50.Her2$MUC16
+sum(table(Her2.MUC16))  
+Her2.MUC16<-ifelse(is.na(Her2.MUC16), 0,1) 
+
+dfsurv <- data.frame(time, status, Her2.MUC16) 
+head(dfsurv)
+
+fit <- survfit(Surv(time, status) ~ Her2.MUC16, data = dfsurv) 
+
+pval <- surv_pvalue(fit) 
+
+survplot(Surv(time, status) ~ Her2.MUC16, data = dfsurv, col=c("blue", "red"), show.nrisk=F, hr.pos=NA, legend.pos = "topright", stitle=NA, cex=0.5,main = "Survival by MUC16 mutation in PAM50 Her2",ylab="Survival probability", xlab="Time in months")
+legend(x=0, y=0.2, legend=as.character(pval$pval.txt), cex=0.8, box.lty = 0)
+```
+
+
+```{r}
+##TP53
+Her2.TP53<- data.PAM50.Her2$TP53
+sum(table(Her2.TP53))  
+Her2.TP53<-ifelse(is.na(Her2.TP53), 0,1) 
+
+dfsurv <- data.frame(time, status, Her2.TP53) 
+head(dfsurv)
+
+fit <- survfit(Surv(time, status) ~ Her2.TP53, data = dfsurv) 
+
+pval <- surv_pvalue(fit) 
+
+survplot(Surv(time, status) ~ Her2.TP53, data = dfsurv, col=c("blue", "red"), show.nrisk=F, hr.pos=NA, legend.pos = "topright", stitle=NA, cex=0.5,main = "Survival by TP53 mutation in PAM50 Her2",ylab="Survival probability", xlab="Time in months")
+legend(x=0, y=0.2, legend=as.character(pval$pval.txt), cex=0.8, box.lty = 0)
+```
+
+```{r}
+###PIK3CA
+
+Her2.PIK3CA <- data.PAM50.Her2$PIK3CA
+sum(table(Her2.PIK3CA))  
+Her2.PIK3CA<-ifelse(is.na(Her2.PIK3CA), 0,1) 
+
+dfsurv <- data.frame(time, status, Her2.PIK3CA) 
+head(dfsurv)
+
+fit <- survfit(Surv(time, status) ~ Her2.PIK3CA, data = dfsurv) 
+
+pval <- surv_pvalue(fit) 
+
+survplot(Surv(time, status) ~ Her2.PIK3CA, data = dfsurv, col=c("blue", "red"), show.nrisk=F, hr.pos=NA, legend.pos = "topright", stitle=NA, cex=0.5,main = "Survival by PIK3CA mutation in PAM50 Her2",ylab="Survival probability", xlab="Time in months")
+legend(x=0, y=0.2, legend=as.character(pval$pval.txt), cex=0.8, box.lty = 0)
+```
+```{r}
+###AHNAK2
+Her2.AHNAK2 <- data.PAM50.Her2$AHNAK2
+sum(table(Her2.AHNAK2))  
+Her2.AHNAK2<-ifelse(is.na(Her2.AHNAK2), 0,1) 
+
+dfsurv <- data.frame(time, status, Her2.AHNAK2) 
+head(dfsurv)
+
+fit <- survfit(Surv(time, status) ~ Her2.AHNAK2, data = dfsurv) 
+
+pval <- surv_pvalue(fit) 
+
+survplot(Surv(time, status) ~ Her2.AHNAK2, data = dfsurv, col=c("blue", "red"), show.nrisk=F, hr.pos=NA, legend.pos = "topright", stitle=NA, cex=0.5,main = "Survival by AHNAK2 mutation in PAM50 Her2",ylab="Survival probability", xlab="Time in months")
+legend(x=0, y=0.2, legend=as.character(pval$pval.txt), cex=0.8, box.lty = 0)
+```
+
+```{r}
+###SYNE1
+
+Her2.SYNE1<- data.PAM50.Her2$SYNE1
+sum(table(Her2.SYNE1))  
+Her2.SYNE1<-ifelse(is.na(Her2.SYNE1), 0,1) 
+
+dfsurv <- data.frame(time, status, Her2.SYNE1) 
+head(dfsurv)
+fit <- survfit(Surv(time, status) ~ Her2.SYNE1, data = dfsurv) 
+pval <- surv_pvalue(fit) 
+
+survplot(Surv(time, status) ~ Her2.SYNE1, data = dfsurv, col=c("blue", "red"), show.nrisk=F, hr.pos=NA, legend.pos = "topright", stitle=NA, cex=0.5,main = "Survival by SYNE1 mutation in PAM50 Her2",ylab="Survival probability", xlab="Time in months")
+legend(x=0, y=0.2, legend=as.character(pval$pval.txt), cex=0.8, box.lty = 0)
+```
+```{r}
+###CDH1
+
+Her2.CDH1 <- data.PAM50.Her2$CDH1
+sum(table(Her2.MUC16))  
+Her2.CDH1<-ifelse(is.na(Her2.CDH1), 0,1) 
+
+dfsurv <- data.frame(time, status, Her2.CDH1) 
+head(dfsurv)
+
+fit <- survfit(Surv(time, status) ~ Her2.CDH1, data = dfsurv) 
+
+pval <- surv_pvalue(fit) 
+
+survplot(Surv(time, status) ~ Her2.CDH1, data = dfsurv, col=c("blue", "red"), show.nrisk=F, hr.pos=NA, legend.pos = "topright", stitle=NA, cex=0.5,main = "Survival by CDH1 mutation in PAM50 Her2",ylab="Survival probability", xlab="Time in months")
+legend(x=0, y=0.2, legend=as.character(pval$pval.txt), cex=0.8, box.lty = 0)
+```
+```{r}
+###GATA3
+
+Her2.GATA3 <- data.PAM50.Her2$GATA3
+sum(table(Her2.GATA3))  
+Her2.GATA3<-ifelse(is.na(Her2.GATA3), 0,1) 
+dfsurv <- data.frame(time, status, Her2.GATA3) 
+head(dfsurv)
+
+fit <- survfit(Surv(time, status) ~ Her2.GATA3, data = dfsurv) 
+
+pval <- surv_pvalue(fit) 
+
+survplot(Surv(time, status) ~ Her2.GATA3, data = dfsurv, col=c("blue", "red"), show.nrisk=F, hr.pos=NA, legend.pos = "topright", stitle=NA, cex=0.5,main = "Survival by GATA3 mutation in PAM50 Her2",ylab="Survival probability", xlab="Time in months")
+legend(x=0, y=0.2, legend=as.character(pval$pval.txt), cex=0.8, box.lty = 0)
+```
+
+
+
+Segun lo obtenido, para cada subtipo los genes que han supuesto una variacion significativa en cuanto a supervivencia son:
+
+LumA:
+TP53, P-valor= 0.0028
+GATA3, p-valor= 0.037
+
+LumB:
+TP53, P-valor= 0.0086 
+PIK3CA, p-valor= 0.00075
+GATA3, p-valor= 0.014
+
+Basal:
+PIK3CA, p-valor= 0.014
+
+Normal:
+
+TP53, P-valor= 2*10-4
+GATA3, p-valor= 0.026
+
+Her2:
+AHNAK2, p-valor= 0.033
+
